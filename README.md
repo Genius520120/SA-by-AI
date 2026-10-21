@@ -1,4 +1,4 @@
-# SolidWorks Automation Skill
+# SolidWorks Automation by AI
 
 **AI Skill + MCP toolkit for reliable desktop CAD automation.**
 
