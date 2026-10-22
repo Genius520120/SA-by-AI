@@ -10,10 +10,10 @@ from pathlib import Path
 
 try:
     from .sw_preflight import import_com_dependencies
-    from .sw_connect import open_document, safe_get_com_member
+    from .sw_connect import get_com_member, open_document, safe_get_com_member
 except ImportError:
     from sw_preflight import import_com_dependencies
-    from sw_connect import open_document, safe_get_com_member
+    from sw_connect import get_com_member, open_document, safe_get_com_member
 
 pythoncom, _win32com, VARIANT = import_com_dependencies()
 
@@ -670,6 +670,57 @@ def _normalize_layout(layout):
     return {"groups": groups, "warnings": warnings}
 
 
+def verify_layout(model, layout, tol_translation_mm=0.05, tol_angle_deg=0.01):
+    """
+    校验装配体布局与规格一致（同轴 + 轴向基准）。
+
+    逐组件比对 Transform2 与规格条目：
+      - 平移 XY ≈ 期望（径向同轴）
+      - 平移 Z ≈ 期望（轴向基准；全部零件必须从公共端面起算）
+      - 旋转块 ≈ 期望矩阵
+    不一致即记入 problems —— 这是为了拦截 AddComponent5 的**包围盒居中默认放置**
+    （平移 z = −L/2），它会让每层以中点对称、导体从护套两端穿透。
+
+    参数:
+        model: 已重建的装配体
+        layout: 与 rebuild_assembly 相同的布局
+    返回:
+        {"ok": bool, "problems": [...], "checked": n}
+    """
+    norm = _normalize_layout(layout)
+    expected = {}
+    for gname, entries in norm["groups"].items():
+        if gname != "root" and len(norm["groups"]) > 1:
+            expected[gname] = {"path": gname + ".sldasm", "axis": "Z",
+                               "angle_deg": 0.0, "translation": (0.0, 0.0, 0.0)}
+        for e in entries:
+            base = Path(e["path"]).stem
+            expected[base] = {**e, "path": e["path"]}
+
+    problems, checked = [], 0
+    for c in (model.GetComponents(True) or []):
+        name2 = str(get_com_member(c, "Name2", default=""))
+        base = name2.split("-")[0]
+        e = expected.get(base)
+        if e is None:
+            continue
+        checked += 1
+        arr = [float(v) for v in c.Transform2.ArrayData]
+        exp_t = e["translation"] if e["translation"] is not None else (0.0, 0.0, 0.0)
+        dxy = math.hypot(arr[9] - exp_t[0], arr[10] - exp_t[1]) * 1000.0
+        dz = abs(arr[11] - exp_t[2]) * 1000.0
+        if dxy > tol_translation_mm or dz > tol_translation_mm:
+            problems.append(
+                f"{name2}: 平移 ({arr[9]:.4f},{arr[10]:.4f},{arr[11]:.4f}) m ≠ 期望 "
+                f"({exp_t[0]:.4f},{exp_t[1]:.4f},{exp_t[2]:.4f}) m —— "
+                "AddComponent5 默认包围盒居中未被显式变换覆盖")
+        R = _rotation_matrix_axis(e["axis"], math.radians(e["angle_deg"]))
+        if not all(abs(float(a) - float(b)) <= tol_angle_deg * math.pi / 180.0
+                   for a, b in zip(arr[:9], R)):
+            problems.append(f"{name2}: 旋转块与期望不符")
+    return {"ok": not problems, "problems": problems, "checked": checked}
+
+
 def rebuild_assembly(session, layout, out_path, sw=None, *, plain_sub: str = "sub"):
     """
     按布局一次性重建装配体，并对每个组件施加指定位姿。
@@ -700,14 +751,15 @@ def rebuild_assembly(session, layout, out_path, sw=None, *, plain_sub: str = "su
         comp = add_component(model, entry["path"], 0.0, 0.0, 0.0, "", sw)
         if comp is None:
             raise RuntimeError(f"添加组件失败: {entry['path']}")
-        if entry["angle_deg"] or entry["translation"] is not None:
-            apply_component_transform_matrix(
-                comp,
-                _rotation_matrix_axis(entry["axis"], math.radians(entry["angle_deg"])),
-                translation=entry["translation"] if entry["translation"] is not None
-                else (0.0, 0.0, 0.0),
-                preserve_translation=False,
-            )
+        # 无条件施加显式变换：AddComponent5 默认按包围盒居中放置（平移 z = −L/2），
+        # 信任默认会让各层以中点对称、导体穿透护套。即使角度为 0 也必须归零平移。
+        apply_component_transform_matrix(
+            comp,
+            _rotation_matrix_axis(entry["axis"], math.radians(entry["angle_deg"])),
+            translation=entry["translation"] if entry["translation"] is not None
+            else (0.0, 0.0, 0.0),
+            preserve_translation=False,
+        )
         return comp
 
     top_sources = []
@@ -735,6 +787,13 @@ def rebuild_assembly(session, layout, out_path, sw=None, *, plain_sub: str = "su
             _place(top_model, entry)
 
     top_model.ForceRebuild3(False)
+    verification = verify_layout(top_model, layout)
+    if not verification["ok"]:
+        for problem in verification["problems"]:
+            print("[rebuild_assembly] 布局校验失败: " + problem, flush=True)
+        raise RuntimeError(
+            f"装配布局校验失败 {len(verification['problems'])} 项"
+            "（组件位姿与规格不一致，多为包围盒居中默认放置未覆盖）")
     session.save(top_model, out_path)
     return top_model
 

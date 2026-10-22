@@ -17,7 +17,16 @@ from __future__ import annotations
 import math
 
 
-def hex_lattice_2d(spacing: float, predicate, bounds=None) -> list[tuple[float, float]]:
+def _centroid_offset(pts) -> float:
+    """点集质心到原点的距离。"""
+    if not pts:
+        return float("inf")
+    n = len(pts)
+    return math.hypot(sum(p[0] for p in pts) / n, sum(p[1] for p in pts) / n)
+
+
+def hex_lattice_2d(spacing: float, predicate, bounds=None,
+                   balance: bool = True, balance_steps: int = 8) -> list[tuple[float, float]]:
     """
     生成点距恰为 `spacing` 的六方点阵，保留满足谓词的点。
 
@@ -36,18 +45,66 @@ def hex_lattice_2d(spacing: float, predicate, bounds=None) -> list[tuple[float, 
     dy = spacing * math.sqrt(3) / 2.0
     n = 8 if bounds is None else int(max(abs(bounds[0]), abs(bounds[1]),
                                          abs(bounds[2]), abs(bounds[3])) / spacing) + 2
-    pts: list[tuple[float, float]] = []
-    for j in range(-n, n + 1):
-        y = j * dy
-        xoff = (spacing / 2.0) if (j % 2) else 0.0
-        for i in range(-n, n + 1):
-            x = i * spacing + xoff
-            if bounds is not None:
-                if not (bounds[0] <= x <= bounds[1] and bounds[2] <= y <= bounds[3]):
-                    continue
-            if predicate is None or predicate(x, y):
-                pts.append((x, y))
-    return pts
+
+    def _generate(ox: float, oy: float) -> list[tuple[float, float]]:
+        pts: list[tuple[float, float]] = []
+        for j in range(-n, n + 1):
+            y = j * dy + oy
+            xoff = (spacing / 2.0) if (j % 2) else 0.0
+            for i in range(-n, n + 1):
+                x = i * spacing + xoff + ox
+                if bounds is not None:
+                    if not (bounds[0] <= x <= bounds[1] and bounds[2] <= y <= bounds[3]):
+                        continue
+                if predicate is None or predicate(x, y):
+                    pts.append((x, y))
+        return pts
+
+    if not balance:
+        return _generate(0.0, 0.0)
+
+    # 两级配平（都保持点间距离不变，即相切/不重叠关系不变）：
+    #   1) 锚点寻优：点阵(6次对称)与区域(任意对称)不匹配时，裁剪后的点集质心会偏离原点，
+    #      在一个 spacing 内扫描锚点偏移，取质心最靠近原点的一组。
+    #   2) 质心校正：整体平移 -质心，把残余偏移消到 0；平移后逐点复检谓词，
+    #      有点出界则放弃校正、保留锚点寻优结果。
+    best, best_off = None, None
+    step = spacing / max(1, balance_steps)
+    for a in range(balance_steps):
+        for b in range(balance_steps):
+            cand = _generate(a * step, b * step)
+            if not cand:
+                continue
+            off = _centroid_offset(cand)
+            if best is None or off < best_off:
+                best, best_off = cand, off
+    if best is None:
+        raise RuntimeError("六方点阵寻优失败：没有任何锚点能产生有效点集")
+
+    n = len(best)
+    cx = sum(p[0] for p in best) / n
+    cy = sum(p[1] for p in best) / n
+    if best_off > 1e-9 and predicate is not None:
+        shifted = [(x - cx, y - cy) for x, y in best]
+        if all(predicate(x, y) for x, y in shifted):
+            return shifted
+    return best
+
+
+def rotational_copies(points, count: int, angle_deg: float) -> list[tuple[float, float]]:
+    """
+    把一组点绕原点旋转复制 count 份（每份间隔 angle_deg）。
+
+    用途：N 等分对称结构（辐条、扇区填充、螺栓圆周分布）。整体复制保证
+    **严格的 N 次旋转对称**——合成点集的质心精确落在原点上，且点间距离
+    关系与单份内部完全一致（相切/不重叠不会因复制而破坏）。
+    """
+    out: list[tuple[float, float]] = []
+    for k in range(count):
+        a = math.radians(angle_deg) * k
+        c, s = math.cos(a), math.sin(a)
+        out.extend((x * c - y * s, x * s + y * c) for x, y in points)
+    return out
 
 
 def min_pair_distance(points) -> float:

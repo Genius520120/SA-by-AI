@@ -136,6 +136,21 @@ def run_pure_checks() -> None:
     except ValueError:
         check("spacing 非正抛 ValueError", True)
 
+    # 8) rotational_copies：N 次旋转对称 → 质心精确归轴（点距关系不变）
+    from sw_patterns import rotational_copies
+    # 楔形必须与旋转间隔匹配（5×72° → 每份 72° 宽），且点要向内缩半个 spacing，
+    # 否则相邻复制体在共享边界上的点会重合（与电缆扇区谓词的内缩同款）
+    half_w = math.radians(36)
+    local = hex_lattice_2d(spacing, lambda x, y: (
+        10 <= math.hypot(x, y) <= 30
+        and abs(math.atan2(y, x)) + (spacing / 2) / max(math.hypot(x, y), 1e-9) <= half_w))
+    allpts = rotational_copies(local, 5, 72.0)
+    cx = sum(x for x, y in allpts) / len(allpts)
+    cy = sum(y for x, y in allpts) / len(allpts)
+    check("旋转复制后质心精确归轴", math.hypot(cx, cy) <= 1e-9, (round(cx, 9), round(cy, 9)))
+    mn2 = min_pair_distance(allpts)
+    check("旋转复制不破坏相切", mn2 >= spacing - 1e-6, round(mn2, 6))
+
 
 # ---------------------------------------------------------------- 真实 SolidWorks
 def run_live_checks(output_dir: Path, visible: bool = True, wait_seconds: int = 12) -> None:
