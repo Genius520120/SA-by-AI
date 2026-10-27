@@ -125,6 +125,22 @@ solidworks-automation-skill/
 2. 在 `references/` 中更新相关文档
 3. 在 `examples/` 中添加使用示例
 4. 更新 README.md
+5. 若属于新能力，在 `capabilities.yaml` 增加条目（`level` 必须是 `VALID_LEVELS` 之一，
+   `verified` 需要真机实测证据 + `tests/` 里的回归脚本）
+
+提交前跑一次静态校验：
+
+```bash
+python scripts/validate_skill.py
+```
+
+它会检查文件完整性、Python 语法、JSON Schema，**并调用 `capabilities.load_capabilities()`
+校验能力清单**——包括路由 `capability_ids` 是否都指向真实存在的能力。
+
+> 为什么单独强调：`capabilities.yaml` 语法合法不代表内容正确。手工用文本替换编辑它时，
+> 很容易把相邻条目的某一行吃掉（例如删掉一条能力，或删掉某个对象的 `"id"` 行），
+> 而 `json.loads` 照样通过。现在这类问题会在校验阶段直接报出来，例如
+> `路由 solidworks_typed_safearray 引用了未知能力: ['motion_study']`。
 
 ## 需要帮助?
 

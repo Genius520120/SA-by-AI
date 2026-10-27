@@ -131,7 +131,13 @@ def check_json_files():
     ]
     for path in targets:
         json.loads(path.read_text(encoding="utf-8"))
-    json.loads((ROOT / "capabilities.yaml").read_text(encoding="utf-8"))
+    # 能力清单不能只做 json.loads：语法合法但条目被误删/路由悬空引用时，json.loads 抓不到。
+    # 直接复用 capabilities.load_capabilities()，它会校验 id/level、路由 ID 唯一性、
+    # 以及 route.capability_ids 是否都指向真实存在的能力（这正是"手滑删掉一条能力"的兜底）。
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from capabilities import load_capabilities  # noqa: E402
+
+    load_capabilities(ROOT / "capabilities.yaml")
     workflows = json.loads((ROOT / "golden-workflows.yaml").read_text(encoding="utf-8"))
     if len(workflows.get("workflows", [])) != 10:
         raise AssertionError("黄金工作流必须保持 10 项基线")
