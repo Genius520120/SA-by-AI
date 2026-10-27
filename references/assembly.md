@@ -194,14 +194,85 @@ face = find_largest_cylinder_face(
 底层逻辑：
 
 ```python
+from sw_connect import safe_get_com_member
+
 bodies = part.GetBodies2(0, False)
 for body in bodies:
     for face in body.GetFaces():
         surface = face.GetSurface()
-        if surface.IsCylinder:
-            params = surface.CylinderParams
+        # 必须走 safe_get_com_member：动态派发下 getattr(surface, "IsCylinder")
+        # 会抛 com_error「找不到成员」，异常一旦被吞掉就是"0 个圆柱面"的静默空结果。
+        if safe_get_com_member(surface, "IsCylinder"):
+            params = surface.CylinderParams   # 这个用 getattr 正常
             radius = params[6]  # 单位米
 ```
+
+同一坑也适用于 `IsPlane`、`IsCone`、`IsTorus` 等所有 `Is*` 曲面类型判定；而 `CylinderParams` / `PlaneParams` / `ConeParams` 这些参数属性用 `getattr` 取是正常的。规律：**`Is*` 走 `safe_get_com_member`，`*Params` 走普通属性**。
+
+实测（SolidWorks 2024，pywin32 动态派发）：对同一零件的 6 个面逐个调用，`getattr(surface, "IsPlane")` 6/6 抛 `com_error(-2147352573, '找不到成员')`；换成 `safe_get_com_member` 后正常返回 True/False。
+
+## 按包围盒匹配配合面
+
+外部数据（STEP 装配、Fusion/URDF 导出）通常会给出"哪个面参与配合"，最可靠的做法是**按面的包围盒做唯一命中**，不要按半径/面积猜。
+
+直接用封装好的函数：
+
+```python
+from sw_assembly import find_face_by_box
+
+# target_box = [xmin, ymin, zmin, xmax, ymax, zmax]，单位米，零件坐标系
+f1 = find_face_by_box(comp1, box_from_data_one)
+f2 = find_face_by_box(comp2, box_from_data_two)
+if f1 and f2:
+    asm.ClearSelection2(True)
+    f1.Select2(False, 1)
+    f2.Select2(True, 1)
+    mate = asm.AddMate5(SW_MATE_CONCENTRIC, 0, False, 0, 0, 0, 0, 0, 0, 0, 0, False, False, 0, err)
+```
+
+底层逻辑（自己写时的要点）：
+
+```python
+def box_of(face):
+    v = face.GetBox            # 属性，不是方法
+    return [float(x) for x in (v() if callable(v) else v)]
+
+def match_face_by_box(comp, target_box, tol=1e-4):
+    part = comp.GetModelDoc2
+    hits = []
+    for body in (part.GetBodies2(0, False) or []):
+        for face in (body.GetFaces() or []):
+            b = box_of(face)
+            if max(abs(b[i] - target_box[i]) for i in range(6)) < tol:
+                hits.append(face)
+    return comp.GetCorresponding(hits[0]) if len(hits) == 1 else None
+```
+
+要点：
+
+- **`IFace2.GetBox` 返回的是零件坐标系**，和数据源里 entity 的 `bounding_box` 同一套坐标，可以直接比。
+- **必须要求唯一命中**（`len(hits) == 1`）。对称件上常有多个包围盒相同的面，命中不唯一就说明这个判据在这台件上失效，应报出来而不是随便挑一个。
+- **实测对比**：按"半径范围内面积最大的圆柱面"猜 → 配合求解后组件漂移 **15.6 mm**；改成按包围盒匹配 → 唯一命中、误差 **0.0000 mm**。
+- 匹配完的面要 `comp.GetCorresponding(face)` 转成装配体上下文的实体，才能传给 `AddMate5`。
+- **每个 `AddMate5` 之后面指针全部失效**（求解器会移动组件），必须重新取面，不能跨 Mate 复用缓存。
+
+## 同轴配合保留轴向自由度
+
+同心/同轴 Mate 只锁径向两个自由度，**轴向是自由的**。装配体一旦求解，SolidWorks 会把零件沿轴推到一个它自己认为合理的位置。
+
+实测：把组件按原始位姿精确摆好、再加同心 Mate，求解后某台装配体的包围盒从 0 偏差变成 **95.21 mm** 偏差——零件被轴向推走。
+
+所以：
+
+- **判据要用"径向偏差"，不是"组件平移总差"**。平移里包含正常的轴向滑动，用总差判会把成功案例误判成失败。
+  ```python
+  delta = [now[i] - expected[i] for i in range(3)]
+  axial = sum(delta[i] * axis[i] for i in range(3))
+  radial = math.sqrt(max(0.0, sum(v * v for v in delta) - axial * axial))
+  ok = radial < 1e-4          # 径向≈0 即配合成立，轴向非 0 是允许的
+  ```
+- **要真定位就必须补轴向约束**：再给一个距离 Mate（距离 = 数据源里的 offset），或者干脆不加 Mate、直接按位姿摆放 + 全选 Fix（见 `references/review.md` 的验收门槛）。
+- 别指望 `align` / `flip` / `lock_rotation` 参数能救方向问题：两圆柱轴向相反时 SolidWorks 会强制翻转 180°，这几个参数都无效。
 
 ## 可以在软件里操作吗
 
@@ -236,3 +307,49 @@ count = interference.GetInterferenceCount()
 - 添加组件前确认所有路径存在，失败组件要记录清单。
 - 自动化脚本中关闭不必要的图形刷新；最终恢复、重建、导出预览。
 - 文档太多或 COM 报内部错误时，先 `CloseAllDocuments(False)`；仍不稳定再重启 SolidWorks 主进程。
+
+### 每加完一个组件就释放零件文档（>40 件的必用配方）
+
+`AddComponent5` 会把零件文档留在内存里。组件越多、常驻文档越多，到某个点就会崩。
+
+实测（SolidWorks 2024）：46 件和 73 件的装配体都在**第 45 个组件**处抛
+`com_error(-2147023174, 'RPC 服务器不可用')`，随后 SolidWorks 进程直接退出。
+现象很像"件数上限"，其实和件数无关——把文档压住以后，**152 件 / 148 条配合的整机一次跑通**（298 s，与官方整机 STEP 偏差 1.17 mm）。
+
+```python
+from sw_assembly import add_component, release_part_document
+
+for occ in occurrences:
+    comp = add_component(asm, sld_path, sw=sw)
+    apply_component_transform_axes(comp, ...)        # 先设好位姿
+    release_part_document(sw, sld_path, keep_title=asm.GetTitle)   # 再关掉零件文档
+```
+
+要点：
+
+- **顺序不能反**。先设位姿再关文档；先关文档会让后续 `comp.Transform2` 拿不到对象。
+- `keep_title` 传装配体标题，防止把装配体本身关掉。
+- 加了这一步之后，不需要"每 3–4 台重启一次 SolidWorks"，也不需要进程级隔离。
+- 关掉文档不影响已放置的组件：位姿已写进组件，重开文档时按需加载。
+
+## 约束状态判定
+
+批量装配后要判断"是不是真的完全定义了"，别只看有没有报错：
+
+```python
+from sw_connect import get_com_member
+
+comp.IsFixed                    # 属性，直接可读，True = 已固定
+comp.GetConstrainedStatus()     # 3 = 完全定义/固定，2 = 欠定义
+```
+
+枚举含义用对照实测标定过（全新装配体）：
+
+| 组件 | `IsFixed` | `GetConstrainedStatus` |
+|---|---|---|
+| 第一个组件（SolidWorks 默认固定） | True | **3** |
+| 第二个组件（默认浮动） | False | **2** |
+
+所以验收条件是：**全部组件 `IsFixed is True` 且 `GetConstrainedStatus() == 3`**。
+注意 `IsFixed` 在 pywin32 动态派发下是**属性**，写成 `comp.IsFixed()` 会报 not callable。
+

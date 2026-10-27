@@ -122,6 +122,9 @@ with SolidWorksSession(version=2026) as session:
 | AutoCAD DWG/DXF 二维绘图、线稿转 CAD、批量改图 | `subskills/autocad-automation/scripts/acad_draw.py`、`subskills/autocad-automation/scripts/acad_review.py` | `subskills/autocad-automation/SKILL.md`、`subskills/autocad-automation/references/troubleshooting.md` |
 | 装配体操作、齿轮联动/铰链/可拖动运动配合 | `scripts/sw_assembly.py` | `references/assembly.md` |
 | 装配一键重建（按 group 分组、统一平移归零） | `scripts/sw_assembly.py::rebuild_assembly` | `references/troubleshooting.md` |
+| 批量重建+机器验收（三轴位姿、>40 件、独立参考几何比对） | `scripts/sw_batch_rebuild.py::rebuild_and_verify` | `references/assembly.md`、`references/review.md` |
+| 大批量装配内存管理（每件加完即释放零件文档） | `scripts/sw_assembly.py::release_part_document` | `references/assembly.md` |
+| 模态弹窗看门狗（模板选择框/诊断框卡死自动化） | `scripts/sw_dialog_guard.py` | `references/troubleshooting.md` |
 | Motion Study 运动算例、旋转马达与结果审计 | `scripts/sw_motion.py` | `references/motion-study.md`、`references/complex-mechanical-routing.md` |
 | 工程图出图 | `scripts/sw_drawing.py` | `references/drawing.md` |
 | 文件导出 | `scripts/sw_export.py` | `references/export.md` |

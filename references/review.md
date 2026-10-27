@@ -11,6 +11,32 @@
 5. 模型已缩放到适合窗口：`model.ViewZoomtofit2()`。
 6. 至少导出一张等轴测 BMP，复杂模型导出前视、俯视、右视。
 
+## 用独立参考几何验收，别用数据源自报的包围盒
+
+当装配体是**从外部数据重建**（STEP 装配、Fusion/URDF/测量数据等）时，最容易犯的错是拿数据源里的 `bounding_box` 当验收基准。那份 bbox 是数据作者算的，可能和几何本身不一致。
+
+正确做法：**找一个和重建路径无关的独立几何当基准**，通常就是数据源自带的整机 STEP：
+
+```python
+mine = [float(v) for v in asm.GetBox(0)]                    # 重建结果
+ref_doc = open_document(sw, os.path.join(src, "assembly.step"))
+ref = [float(v) for v in ref_doc.GetBox(0)]                 # 官方整机几何
+err_mm = max(abs(mine[i] - ref[i]) for i in range(6)) * 1000
+```
+
+实测反例（同一批数据）：某台装配体重建结果与官方整机 STEP 偏差 **0.00 mm**，但与该数据 JSON 里自报的 bbox 差 **61.76 mm**。用 JSON bbox 判，这台会被误杀。
+
+判据建议：
+
+| 指标 | 门槛 |
+|---|---|
+| 与独立参考几何的包围盒偏差 | ≤ 5 mm |
+| 组件约束状态 | 全部 `IsFixed is True` |
+| 保存→关闭→重开后包围盒漂移 | ≤ 0.5 mm |
+
+三条同时满足才算通过。只看"重建成功没报错"是不够的——`SaveAs3` 返回 1 不落盘、`SetTransformAndSolve2` 返回 True 但旋转没写进去，都是不报错但错的。
+
+
 ## 结构化自审查报告
 
 ```python

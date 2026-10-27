@@ -454,6 +454,73 @@ py -3.13 tests\solidworks_loadfile4_import_regression.py --output-dir C:\CADAuto
 Parasolid 中间格式，或让用户手工确认模板弹窗。`ensure_default_templates()` 只能降低弹窗概率，
 不能保证所有 SW2024 本地模板配置都静默导入。
 
+### 模态弹窗把自动化卡死（兜底方案：看门狗）
+
+即使模板偏好都配好了，SolidWorks 在自动化过程中仍可能弹「新建 SOLIDWORKS 文件」「输入诊断」
+「重建模型错误」这类**模态对话框**。一旦弹出，COM 调用会被阻塞，脚本无限等待，必须人工点确定。
+
+兜底做法：`scripts/sw_dialog_guard.py` 起一个后台线程，枚举顶层窗口，命中就点掉。
+
+```python
+from sw_dialog_guard import DialogGuard, ensure_templates
+
+ensure_templates(sw)                 # 先把三种默认模板写进偏好，降低弹窗概率
+with DialogGuard(interval=0.4):      # 再挂看门狗兜底
+    ...                              # 你的 COM 操作
+```
+
+实现要点（踩过的坑）：
+
+- 只认 `#32770` 类窗口 + 标题关键字（中英文都覆盖），别乱点其他窗口。
+- **必须找到对话框里的按钮发 `BM_CLICK`**。给对话框本身发 `WM_COMMAND(IDOK)` 跨进程**无效**，
+  实测会一直重复命中、对话框纹丝不动。
+- 「输入诊断 / 重建错误」类发 `WM_CLOSE`，不要按确定（按了会走一遍诊断流程）。
+- 默认模板偏好的枚举是 `swDefaultTemplatePart=8`、`Assembly=9`、`Drawing=10`。
+  用 145/146/147 去写会返回 False（`SetUserPreferenceStringValue` 静默失败）。
+
+实测：人为弹出同名对话框，**0.6 s 内自动点掉**；批量跑 152 件装配体时，实战命中并点掉了
+两次「新建 SOLIDWORKS 文件」弹窗，全程无人值守。
+
+**注意区分两种"卡住"**：弹窗卡住可以用看门狗救；但如果窗口枚举里**根本没有对话框**、
+进程内存也不再增长，那是 SolidWorks 在导入/求解里挂死了，看门狗无能为力——只能靠超时 +
+重启进程。大装配遇到这种情况，优先怀疑文档堆积（见 `references/assembly.md` 的内存管理配方）。
+
+
+### SaveAs3 返回 1 或文件不落盘
+
+场景：`doc.SaveAs3(path, 0, 0)` 返回 `1`，不抛异常，但目标文件**根本没生成**。
+
+两个必查点：
+
+1. **路径必须是绝对路径。** 传相对路径（如 `"out/part.sldprt"`）会静默失败。
+   ```python
+   doc.SaveAs3(os.path.abspath(out_path), 0, 0)      # 对
+   doc.SaveAs3("out/part.sldprt", 0, 0)              # 错，返回 1 不落盘
+   ```
+2. **装配体打开时，导入零件的 SaveAs 会失败。** 从 STEP 批量导零件时，如果先 `new_document("assembly")` 再导零件，
+   `SaveAs3` 会返回 1。正确顺序是**先把所有零件导入并保存成 SLDPRT，再建装配体**。
+
+```python
+# 对：先导零件
+for step in step_files:
+    doc = open_document(sw, step)
+    doc.SaveAs3(os.path.abspath(sld_path), 0, 0)
+    sw.CloseDoc(doc.GetTitle)
+asm = new_document(sw, "assembly")       # 再建装配体
+```
+
+**不要用返回值判断成功，要用文件系统判断**：
+
+```python
+rc = doc.SaveAs3(os.path.abspath(path), 0, 0)
+if not os.path.exists(path):
+    raise RuntimeError(f"SaveAs3 返回 {rc}，文件未落盘: {path}")
+```
+
+同理，`SetTransformAndSolve2()` 返回 True 也不代表旋转写进去了（见本节 ArrayData 条目），
+`AddMate5` 返回非 None 也不代表配合是对的。**一律以回读为准**：文件存在性、`ArrayData` 数值、
+`GetBox()` 包围盒、`IsFixed` 状态。
+
 ### OBJ/STL 用 OpenDoc6 打不开或 LoadFile4 类型不匹配
 
 场景：公开网格参考模型、汽车外观模型或测试立方体 `.obj/.stl` 用 `OpenDoc6(path, swDocPART, ...)`
@@ -593,6 +660,41 @@ apply_component_transform_axis(component, axis="X", angle_rad=deg(30), translati
 ```
 
 **必读：`ArrayData` 只能用 `VARIANT(VT_ARRAY|VT_R8)` 赋值。** 直接赋 Python 元组时 COM 会丢弃旋转块——实测旋转部分仍是单位阵，只有平移槽被写入错位值，而 `SetTransformAndSolve2` 仍可能返回 True。`apply_component_transform_axis` 内部已封装 VARIANT 并回读校验，写入不生效会抛 `RuntimeError`，不会静默假成功。
+
+**必读之二：`ArrayData[0:9]` 是列主序，不是行主序。** 这 9 个数是"局部 X/Y/Z 轴在装配体中的像"连续存放：
+
+```
+ArrayData = [Xx, Xy, Xz,  Yx, Yy, Yz,  Zx, Zy, Zz,  tx, ty, tz,  1, 0, 0, 0]
+             └─ X 轴的像 ─┘ └─ Y 轴的像 ─┘ └─ Z 轴的像 ─┘
+```
+
+如果按常见的行主序 `p' = R·p` 直接把这 9 个数摊平写进去，得到的是**转置矩阵**，也就是反向旋转。
+
+实测证据（同一个 18 件装配体，只改这一处）：
+
+| 写法 | 整机包围盒偏差 |
+|---|---|
+| 行主序 `[Xx,Yx,Zx, Xy,Yy,Zy, Xz,Yz,Zz]` | **493.3 mm**（零件散架） |
+| 列主序 `[Xx,Xy,Xz, Yx,Yy,Yz, Zx,Zy,Zz]` | **2.1 mm**（正确） |
+
+**为什么以前没暴露**：对称旋转阵两种写法等价。例如 `diag(-1,-1,1)`（绕 Z 转 180°）、单位阵、以及只翻转一个轴的矩阵，行/列主序结果完全一样。只有非对称旋转（斜轴、复合角、外部数据源给的任意姿态）才会出错。
+
+用法：
+
+```python
+from sw_assembly import build_transform_data_axes, build_transform_data_matrix
+
+# 外部数据源直接给三个轴向量时，用这个入口，绕开顺序歧义（推荐）
+data = build_transform_data_axes(x_axis, y_axis, z_axis, translation=(0, 0, 0))
+
+# 手上是行主序 3x3 时，这个函数会自动转置成列主序
+data = build_transform_data_matrix(row_major_9, translation=(0, 0, 0))
+
+transform.ArrayData = VARIANT(VT_ARRAY | VT_R8, list(data))
+```
+
+回归测试：`tests/solidworks_transform_convention_regression.py`（7 项，覆盖绕 Z +90°、绕 X +45°、对称阵不变、转置关系、双入口一致）。
+
 
 注意：直接改 Transform 适合生成演示帧或定位；如果目标是在 SolidWorks 里可拖动，仍要靠真实 Mate 保留自由度。
 

@@ -195,6 +195,41 @@ def add_component(asm_model, part_path, x=0, y=0, z=0, config_name="", sw=None):
     return component
 
 
+def release_part_document(sw, part_path, keep_title=None):
+    """
+    @brief 关闭已打开的零件文档，释放 SolidWorks 常驻文档内存。
+    @param sw SldWorks 应用对象。
+    @param part_path 零件文件路径（绝对或相对均可）。
+    @param keep_title 不要关闭的文档标题（通常传装配体标题，避免误关）。
+    @return True 表示确实关掉了一个文档。
+
+    @note **大批量装配必用**。`AddComponent5` 会把零件文档留在内存里，组件加得越多
+          常驻文档越多。实测（SolidWorks 2024）：46 件和 73 件的装配体都在**第 45 个组件**
+          处抛 `com_error(-2147023174, 'RPC 服务器不可用')` 并让 SolidWorks 退出，看起来
+          像"件数上限"，实际是文档堆积把内存/RPC 撑爆。
+          每加完一个组件、设完位姿后调用本函数，常驻文档可压到 1–2 个，
+          152 件 / 148 条配合的整机也能一次跑通（298 s）。
+
+    用法：
+        comp = add_component(asm, sld, sw=sw)
+        apply_component_transform_axes(comp, ...)   # 先把位姿设好
+        release_part_document(sw, sld, keep_title=asm.GetTitle)
+    """
+    try:
+        path = os.path.abspath(os.path.expandvars(os.path.expanduser(str(part_path))))
+        doc = sw.GetOpenDocumentByName(path)
+        if doc is None:
+            return False
+        title = str(doc.GetTitle)
+        if keep_title is not None and title == str(keep_title):
+            return False
+        sw.CloseDoc(title)
+        return True
+    except Exception:
+        return False
+
+
+
 def resolve_component(component, state=SW_COMPONENT_FULLY_RESOLVED):
     """
     @brief 将组件解析为 Resolved/FullyResolved 状态。
@@ -279,6 +314,49 @@ def get_component_feature_entity(component, aliases, resolve=True):
     """
     feature = get_component_feature(component, aliases, resolve=resolve)
     return get_assembly_entity(component, feature)
+
+
+def find_face_by_box(component, target_box, tol=1e-4, resolve=True):
+    """
+    @brief 按包围盒在组件里唯一定位一个面（外部数据里"哪个面参与配合"的可靠匹配方式）。
+    @param component IComponent2 对象。
+    @param target_box [xmin,ymin,zmin,xmax,ymax,zmax]，单位米，**零件坐标系**。
+    @param tol 匹配容差，单位米，默认 0.1 mm。
+    @param resolve 是否先解析组件。
+    @return 装配体上下文中的 IFace2（可直接传给 AddMate5）；命中数不等于 1 时返回 None。
+
+    @note `IFace2.GetBox` 返回的就是零件坐标系包围盒，和数据源 entity 的 bounding_box 同一套坐标。
+          实测：按"半径范围内面积最大的圆柱面"猜，配合后组件漂移 15.6 mm；
+          改成按包围盒唯一命中，误差 0.0000 mm。
+    @note 要求**唯一命中**。对称件上常有多个包围盒相同的面，命中不唯一说明判据失效，
+          应把该件报出来，而不是随便挑一个。
+    @note 每个 AddMate5 之后组件会被求解器移动，面指针全部失效，必须重新调用本函数取面。
+    """
+    if component is None:
+        return None
+    # 用 get_component_model 统一处理"轻化/压缩组件解析 + 取零件文档"
+    part = get_component_model(component, resolve=resolve, raise_on_error=False)
+    if part is None:
+        return None
+    tgt = [float(v) for v in target_box]
+    if len(tgt) != 6:
+        raise ValueError("target_box 必须是 [xmin,ymin,zmin,xmax,ymax,zmax]")
+    hits = []
+    for body in (safe_get_com_member(part, "GetBodies2", 0, False) or []):
+        for face in (safe_get_com_member(body, "GetFaces") or []):
+            try:
+                box = safe_get_com_member(face, "GetBox")
+                box = [float(x) for x in (box() if callable(box) else box)]
+            except Exception:
+                continue
+            if max(abs(box[i] - tgt[i]) for i in range(6)) < tol:
+                hits.append(face)
+    if len(hits) != 1:
+        return None
+    try:
+        return component.GetCorresponding(hits[0])
+    except Exception:
+        return None
 
 
 def find_largest_cylinder_face(component, min_radius=0.0, max_radius=None, resolve=True):
@@ -544,11 +622,12 @@ def build_transform_data_axis(axis="Z", angle_rad=0.0, translation=(0.0, 0.0, 0.
     @param axis 旋转轴，"X"/"Y"/"Z"（不区分大小写）。
     @param angle_rad 旋转角，弧度，右手定则。
     @param translation 平移量 (tx, ty, tz)，单位米。
-    @return 16 元组：前 9 个为行主序 3x3 旋转矩阵，第 10-12 为平移，第 13 为缩放 1。
+    @return 16 元组：前 9 个为列主序旋转块（局部 X/Y/Z 轴的像），第 10-12 为平移，第 13 为缩放 1。
     @note 返回值必须经 VARIANT(VT_ARRAY|VT_R8) 包装后再赋给 ArrayData；直接赋元组会丢失旋转。
     """
-    tx, ty, tz = (float(v) for v in translation)
-    return tuple(_rotation_matrix_axis(axis, angle_rad) + [tx, ty, tz, 1.0, 0.0, 0.0, 0.0])
+    return build_transform_data_matrix(
+        _rotation_matrix_axis(axis, angle_rad), translation
+    )
 
 
 def build_transform_data_x(tx, ty, tz, angle_rad=0.0):
@@ -578,6 +657,26 @@ def _assert_rotation(object_with_arraydata, expected, label):
         )
 
 
+def build_transform_data_axes(x_axis, y_axis, z_axis, translation=(0.0, 0.0, 0.0)):
+    """
+    @brief 由三个基向量在目标坐标系中的像生成 MathTransform 数组（最不易出错的形式）。
+    @param x_axis 局部 X 轴在装配体中的方向 (x, y, z)。
+    @param y_axis 局部 Y 轴在装配体中的方向 (x, y, z)。
+    @param z_axis 局部 Z 轴在装配体中的方向 (x, y, z)。
+    @param translation 原点在装配体中的位置 (tx, ty, tz)，单位米。
+    @return 16 元组，需经 VARIANT(VT_ARRAY|VT_R8) 包装后赋给 ArrayData。
+    @note 外部数据源（Fusion360 / 机器人 URDF / 坐标测量）几乎都直接给三个轴向量，
+          用这个入口可以完全绕开"行主序还是列主序"的歧义。
+    """
+    vals = []
+    for vec in (x_axis, y_axis, z_axis):
+        if len(vec) != 3:
+            raise ValueError("基向量必须各含 3 个分量")
+        vals.extend(float(v) for v in vec)
+    tx, ty, tz = (float(v) for v in translation)
+    return tuple(vals + [tx, ty, tz, 1.0, 0.0, 0.0, 0.0])
+
+
 def build_transform_data_matrix(rotation, translation=(0.0, 0.0, 0.0)):
     """
     @brief 由任意行主序 3x3 旋转矩阵生成 MathTransform 数组。
@@ -585,12 +684,20 @@ def build_transform_data_matrix(rotation, translation=(0.0, 0.0, 0.0)):
     @param translation 平移量 (tx, ty, tz)，单位米。
     @return 16 元组，需经 VARIANT(VT_ARRAY|VT_R8) 包装后赋给 ArrayData。
     @note 绕单轴表达不了的位姿（例如"先绕 X 转 90° 再绕 Z 转 110°"）用这个入口。
+    @warning SolidWorks 的 ArrayData[0:9] 是**列主序**（连续存放局部 X/Y/Z 轴在装配体中的像），
+          与入参的行主序互为转置。实测证据：同一 18 件装配体，按行主序写入整机包围盒偏
+          493.3 mm（零件散架），按列主序写入偏 2.1 mm。对称旋转阵（如 diag(-1,-1,1)）两者
+          等价，历史用例因此没暴露该差异；非对称旋转必须走转置。
     """
     values = [float(v) for v in rotation]
     if len(values) != 9:
         raise ValueError("rotation 必须包含 9 个元素（行主序 3x3）")
-    tx, ty, tz = (float(v) for v in translation)
-    return tuple(values + [tx, ty, tz, 1.0, 0.0, 0.0, 0.0])
+    r = (values[0:3], values[3:6], values[6:9])
+    x_axis = (r[0][0], r[1][0], r[2][0])
+    y_axis = (r[0][1], r[1][1], r[2][1])
+    z_axis = (r[0][2], r[1][2], r[2][2])
+    return build_transform_data_axes(x_axis, y_axis, z_axis, translation)
+
 
 
 def apply_component_transform_matrix(component, rotation, translation=None,
@@ -612,11 +719,10 @@ def apply_component_transform_matrix(component, rotation, translation=None,
     if translation is None:
         translation = tail[0:3] if preserve_translation else (0.0, 0.0, 0.0)
     rotation = [float(v) for v in rotation]
-    transform.ArrayData = _variant_double_array(
-        rotation + [float(v) for v in translation] + list(tail[3:7])
-    )
+    data = build_transform_data_matrix(rotation, [float(v) for v in translation])
+    transform.ArrayData = _variant_double_array(list(data[:12]) + list(tail[3:7]))
     if verify:
-        _assert_rotation(transform, rotation, "ArrayData 写入")
+        _assert_rotation(transform, list(data[:9]), "ArrayData 写入")
     applied = False
     try:
         applied = bool(component.SetTransformAndSolve2(transform))
@@ -629,7 +735,7 @@ def apply_component_transform_matrix(component, rotation, translation=None,
         except Exception as exc:
             raise RuntimeError(f"组件变换写入失败: {exc}") from exc
     if verify:
-        _assert_rotation(component.Transform2, rotation, "组件位姿应用")
+        _assert_rotation(component.Transform2, list(data[:9]), "组件位姿应用")
     return True
 
 

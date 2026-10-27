@@ -273,7 +273,13 @@
       "backends": ["solidworks-com"],
       "verified_versions": ["2024"],
       "dependencies": ["SolidWorks", "pywin32", "comtypes"],
-      "limitations": ["必须回读配合特征和自由度；不等于完整干涉或受力分析"],
+      "limitations": [
+        "必须回读配合特征和自由度；不等于完整干涉或受力分析",
+        "Transform2.ArrayData[0:9] 是列主序（局部 X/Y/Z 轴的像连续存放），按行主序写入得到转置矩阵；对称旋转阵两种写法等价，非对称旋转会错。实测同一 18 件装配体：行主序偏 493.3 mm，列主序偏 2.1 mm",
+        "同心 Mate 只锁径向、轴向自由，求解器会沿轴推走零件（实测包围盒 0 → 95.21 mm）；判据用径向偏差，不要用组件平移总差",
+        "AddComponent5 会把零件文档留在内存，>40 件时累积到第 45 个组件左右抛 RPC 错误并让 SolidWorks 退出；每加完一个组件调 release_part_document 后，152 件 / 148 条配合可一次跑通",
+        "外部数据驱动配合时，按面 bounding_box 唯一命中比按半径/面积猜可靠（猜错漂移 15.6 mm，bbox 匹配 0.0000 mm）；每个 AddMate5 之后面指针全部失效需重取"
+      ],
       "allowed_modes": ["interactive", "reviewed"]
     },
     {
