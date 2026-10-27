@@ -536,6 +536,21 @@ model.SaveAs3(path, 0, 0)            # 再保存
 app.CloseDoc(get_com_member(model, "GetTitle"))
 ```
 
+### 键槽/沉孔与孔壁相切时切除返回 None
+
+场景：在孔壁上切键槽，矩形内缘与孔圆柱面**正好相切**（y 从孔半径开始），
+`FeatureCut4` 返回 None；把内缘深入孔内 0.5mm 立即成功。
+
+原因：相切面让求解器出现零厚度边界，与"轮廓被吞并"同类。
+
+```python
+# 键槽：矩形内缘伸入孔内 0.5mm，避免相切
+sketch_corner_rectangle(m, mm(-4), mm(bore_r - 0.5), mm(4), mm(bore_r + 3.3))
+```
+
+同理适用于沉孔台阶、肋板与圆柱面相交等所有"轮廓与既有面相切"的场景：
+**让轮廓越过相切位置，宁可多切一点重叠材料。**
+
 ### 工程图导出 PDF：GetExportFileData 路径类型不匹配，直接 SaveAs3 即可
 
 场景：按官方推荐 `app.GetExportFileData(1)` + `data.SetSheets(0, names)` +
