@@ -521,6 +521,39 @@ if not os.path.exists(path):
 `AddMate5` 返回非 None 也不代表配合是对的。**一律以回读为准**：文件存在性、`ArrayData` 数值、
 `GetBox()` 包围盒、`IsFixed` 状态。
 
+### SaveAs3 之后文档句柄失效，GetPartBox 报 <unknown>
+
+场景：`SaveAs3(...)` 之后调用 `model.GetPartBox(True)` 抛
+`AttributeError: <unknown>.GetPartBox`（动态派发下成员"消失"）。
+
+原因：保存动作会使既有文档引用失效。
+
+**规矩：所有回读（包围盒、质量、材质名）都必须在 `SaveAs3` 之前完成**：
+
+```python
+b = box(model)                       # 先回读
+model.SaveAs3(path, 0, 0)            # 再保存
+app.CloseDoc(get_com_member(model, "GetTitle"))
+```
+
+### 工程图导出 PDF：GetExportFileData 路径类型不匹配，直接 SaveAs3 即可
+
+场景：按官方推荐 `app.GetExportFileData(1)` + `data.SetSheets(0, names)` +
+`Extension.SaveAs3(pdf, 0, 1, data, err, warn)` 导出 PDF，动态派发下报
+`类型不匹配 (-2147352571)`——`names` 的 SAFEARRAY 编组很难凑对。
+
+稳定写法（SW 自带 PDF 滤镜，一张纸一张 PDF）：
+
+```python
+dwg.SaveAs3(os.path.join(out_dir, name + ".pdf"), 0, 0)
+if not os.path.exists(pdf_path):
+    raise RuntimeError("PDF 未落盘")
+```
+
+另注意：GB 图纸格式（.slddrt）在
+`C:\ProgramData\SolidWorks\SOLIDWORKS 2024\lang\Chinese-Simplified\sheetformat\a3 - gb.slddrt`，
+**不在** `templates\*.drwdot`（那里是图纸模板，`select_drawing_template` 要求 `.slddrt`）。
+
 ### OBJ/STL 用 OpenDoc6 打不开或 LoadFile4 类型不匹配
 
 场景：公开网格参考模型、汽车外观模型或测试立方体 `.obj/.stl` 用 `OpenDoc6(path, swDocPART, ...)`

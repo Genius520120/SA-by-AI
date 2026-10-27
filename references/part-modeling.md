@@ -18,6 +18,42 @@ model.Extension.SelectByID2("前视基准面", "PLANE", 0, 0, 0, False, 0, None,
 | Top Plane | 上视基准面 | Y 轴 |
 | Right Plane | 右视基准面 | X 轴 |
 
+**草图局部坐标 → 模型坐标的映射（实测，SolidWorks 2024 + pywin32 动态派发）：**
+
+| 基准面 | 草图 u → 模型 | 草图 v → 模型 | 法线（拉伸方向） |
+|---|---|---|---|
+| Front Plane | X | Y | +Z |
+| Top Plane | X | Z | **±Y（见下）** |
+| Right Plane | **−Z** | Y | ±X |
+
+两个最容易踩的坑：
+
+1. **Right Plane 的 u 是负向**。想在 (y=0, z=170) 打一个沿 X 的横孔，草图圆心要写
+   `sketch_circle(m, mm(-170), 0, ...)`——写 `(0, mm(170))` 圆会跑到 y=170 米之外，
+   切除/拉伸都返回 None，而且报错完全看不出位置错了。
+2. **Top Plane 的 v 是 Z**（不是 Y）：`sketch_corner_rectangle(m, mm(x1), mm(z1), mm(x2), mm(z2))`
+   画出来的是 XZ 剖面，沿 Y 拉伸——这正是箱体类零件"剖分面"建模的正确姿势。
+
+**拉伸/切除方向语义（实测）：**
+
+| 调用 | direction=True | direction=False |
+|---|---|---|
+| `extrude_boss(depth)` | 向 **−法线** | 向 +法线 |
+| `extrude_offset_start(depth, start_offset)` | 从 start_offset 向 **−法线** | 从 start_offset 向 +法线 |
+| `extrude_cut(depth)` | 向 −法线 | 向 +法线 |
+
+经验法则：
+
+- **想要"从 z=a 到 z=b (b>a) 的圆柱"**：`extrude_offset_start(depth=b−a, start_offset=b, direction=True)`。
+  即 **start_offset 传高端值，depth 传长度**。
+- **cut 的方向语义与 boss 相反的直觉坑**：材料在 −Z 时 boss 用 `direction=True`，
+  但 cut 要用 **`direction=False`** 才切得到；材料在 +Z 时 cut 用 `direction=True`。
+  `flip=True` 实测反而两个方向都失败，不要依赖它。
+- **拿不准就先探针**：建一段圆柱打印 `GetPartBox`，确认方向后再写正式代码——
+  两个项目的调试时间主要都耗在这里。
+- **`GetPartBox` 必须在 `SaveAs3` 之前调用**：保存后文档句柄失效，再取包围盒报
+  `<unknown>.GetPartBox`。`save()` 类辅助函数请先取 box 再存盘。
+
 ### 草图几何体方法速查
 
 | 方法 | 参数 | 说明 |
@@ -154,6 +190,36 @@ feature_mgr.FeatureRevolve2(
 3. 按轴段半径生成一条闭合半剖轮廓。
 4. 调用 `FeatureRevolve2(..., 2*pi, ...)` 后立即检查返回特征不是 `None`。
 5. 将公差、形位公差、粗糙度作为工程要求记录到属性或交付说明，不要直接扰动名义实体尺寸。
+
+### 螺旋螺纹（扫掠配方与已验证边界）
+
+梯形/三角螺纹用 `sweep_profile_helix`（3D 样条路径 + 引导线，见 `sw_part.py`）。
+**实测边界（SolidWorks 2024）**：
+
+| 截面 | 结果 |
+|---|---|
+| 窄梯形（径向 3mm × 轴向 2~3.4mm，Tr32×6 牙型） | **求解器拒绝**，换相位/采样数/引导线顺序均无效 |
+| 圆截面 R1.6 @ r14.5，引导线 (12.9, 16.1)，points_per_turn=90 | **稳定通过**，高度 12mm 与 72mm（12 圈）都成功 |
+
+可用配方（螺杆 Tr32×6，芯轴 φ26，螺牙外缘 32.2≈大径 32）：
+
+```python
+from sw_part import sketch, sketch_circle, sweep_profile_helix
+
+with sketch(m, "Front Plane") as s:
+    sketch_circle(m, mm(14.5), 0, mm(1.6))          # 截面形心在 r=14.5
+f = sweep_profile_helix(m, s, mm(14.5), mm(6), mm(110),   # 螺距 6，长 110
+                        (mm(12.9), mm(16.1)), hand="right",
+                        points_per_turn=90)
+```
+
+要点：
+
+- **引导线半径取截面外缘**，与截面实际占据的半径范围一致；给与路径同半径的引导线是退化配置。
+- 梯形牙型建不出来时，退而求其次用圆截面（外缘对齐名义大径），并在交付说明里声明"牙型简化"。
+- 螺母内螺纹不再另建螺旋切除：内孔给光孔（直径 = 螺杆大径 + 0.4mm）即可保证装配不干涉，
+  啮合外观由螺杆螺牙表达；此简化必须在交付报告里声明。
+- 已知限制（本函数说明第 4 条）仍适用：**只扫掠一次（相位 0）**，不要碰 288°/297.3° 附近的相位。
 
 最小模式：
 
