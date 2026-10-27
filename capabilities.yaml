@@ -71,7 +71,7 @@
     {
       "id": "solidworks_standard_automation",
       "label": "SolidWorks 常规模型、装配、工程图和导出",
-      "capability_ids": ["part_and_features", "external_spur_gear_geometry", "holes_and_finishing", "assembly_and_mates", "drawing_dimension_insertion", "export_delivery"],
+      "capability_ids": ["part_and_features", "external_spur_gear_geometry", "holes_and_finishing", "assembly_and_mates", "batch_assembly_rebuild_verification", "drawing_dimension_insertion", "export_delivery"],
       "candidates": [
         {"backend": "solidworks-com-pywin32", "semantics": "exact_automation", "priority": 10},
         {"backend": "solidworks-com-comtypes", "semantics": "exact_automation", "priority": 20},
@@ -280,6 +280,24 @@
         "AddComponent5 会把零件文档留在内存，>40 件时累积到第 45 个组件左右抛 RPC 错误并让 SolidWorks 退出；每加完一个组件调 release_part_document 后，152 件 / 148 条配合可一次跑通",
         "外部数据驱动配合时，按面 bounding_box 唯一命中比按半径/面积猜可靠（猜错漂移 15.6 mm，bbox 匹配 0.0000 mm）；每个 AddMate5 之后面指针全部失效需重取"
       ],
+      "allowed_modes": ["interactive", "reviewed"]
+    },
+    {
+      "id": "batch_assembly_rebuild_verification",
+      "label": "外部数据批量重建装配体并机器验收",
+      "level": "verified",
+      "backends": ["solidworks-com"],
+      "verified_versions": ["2024"],
+      "dependencies": ["SolidWorks", "pywin32", "独立参考几何（如数据源自带的整机 STEP）"],
+      "limitations": [
+        "已验证规模：32 台装配体 / 共 751 个组件全部通过，最大 152 件 / 148 条配合；单台耗时 9–299 s，主要花在 STEP 导入",
+        "验收必须用独立参考几何（如数据源自带的整机 STEP），不能用数据源自报的 bounding_box——实测某台与官方 STEP 偏差 0.00 mm 但与自报 bbox 差 61.76 mm",
+        ">40 件必须每加完一个组件调 release_part_document 释放零件文档，否则会在第 45 个组件左右抛 RPC 错误并让 SolidWorks 退出",
+        "位姿必须走 build_transform_data_axes（列主序）；行主序写入会让整机散架（实测偏 493.3 mm）",
+        "只保证静态装配体正确（按位姿摆放 + 全选 Fix）；不承诺可拖动的运动模型，那需要真实 Mate 且本类外部数据常缺可用的定位平面",
+        "回归：tests/solidworks_batch_rebuild_regression.py（8 项：位姿写入 / 全选 Fix / 重开后不漂移 / 文档释放 / 装配体落盘）"
+      ],
+      "skills": ["solidworks-automation"],
       "allowed_modes": ["interactive", "reviewed"]
     },
     {
