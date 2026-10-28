@@ -261,6 +261,32 @@ Add-Type -Path 'E:\Solidworks\SOLIDWORKS\SolidWorks.Interop.swconst.dll'
 
 稳定写法：使用新版 `sw_assembly.add_mate5_checked()`，它接受 `0` 和 `1` 作为成功码，并仍会检查 Mate 是否为空。
 
+### AddMate5 返回 error_status=5（过定义，"同一对零件只允许一个配合"）
+
+场景：给同一对零件先建一个配合成功，再建第二个配合（比如同心 + 距离/重合）时，
+`AddMate5` 被拒：
+
+```text
+AddMate5 失败: type=1, error_status=5
+```
+
+定性（2026-10-28 查证官方 API 文档）：**5 = `swAddMateError_OverDefinedAssembly`（过定义）**，
+不是"冗余"也不是未知错误。
+
+本机实测的等价关系——很多"组合配合"其实第一个就已经把自由度锁完了：
+
+| 看似两个配合 | 实际效果 |
+|---|---|
+| 圆柱-圆柱 `distance=0` | **等价于同心**（再叠加同心 = 过定义） |
+| 面-面 `distance=0` | **等价于重合**（锁 3 个自由度，再叠加 = 过定义） |
+
+结论：**同一对零件只允许一个配合**。要完全定位一个回转件（轴/销/滚子），
+本机可行组合是"同心（锁径向）+ `FixComponent()`（轴向交完全定义）"，
+而不是同心 + 距离。面-面重合用 `AddMate5(type=COINCIDENT)` 在本机直接被拒，
+要用"贴合"时改传 `SW_MATE_DISTANCE, distance=0.0`。
+
+排查顺序：先数该对零件已有配合数 → 换算自由度 → 再决定加不加第二个配合。
+
 ### 选择集被清空
 
 场景：第一个面选择成功，执行解析组件或切换文档后，第二个面选择成功但 `AddMate5()` 失败。

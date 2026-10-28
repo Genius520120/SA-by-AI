@@ -129,10 +129,15 @@ print(collect_mate_feature_summary(asm))
 | 4 | `swMateTANGENT` | 相切 |
 | 5 | `swMateDISTANCE` | 距离 |
 | 6 | `swMateANGLE` | 角度 |
+| 9 | `swMateCAMFOLLOWER` | 凸轮从动件（**原生存在**，2026-10-28 查证官方 `swMateType_e`；此前"没有 Cam Mate"的说法是错的） |
 | 10 | `swMateGEAR` | 齿轮 |
 | 11 | `swMateWIDTH` | 宽度 |
 | 16 | `swMateLOCK` | 锁定 |
+| 20 | `swMateCOORDINATE` | 坐标配合 |
 | 22 | `swMateHINGE` | 铰链 |
+
+本机实测补充：Gear Mate(10) 经 API 创建**两次挂起**（200s/900s 超时），批量自动化绕开；
+凸轮从动件(9) 尚未实测，做凸轮机构真约束可优先尝试。
 
 组件压缩状态常用值：
 
@@ -352,4 +357,20 @@ comp.GetConstrainedStatus()     # 3 = 完全定义/固定，2 = 欠定义
 
 所以验收条件是：**全部组件 `IsFixed is True` 且 `GetConstrainedStatus() == 3`**。
 注意 `IsFixed` 在 pywin32 动态派发下是**属性**，写成 `comp.IsFixed()` 会报 not callable。
+
+### Fix（完全定义）不等于位姿保证——验收必须回读位姿
+
+2026-10-28 受控实验（凸轮机构导向副，4 组件，3 同心 + Fix）：
+
+- 把 3 个已 Fix 的零件用 API 写 `Transform2` 挪偏 (40, −25, 18) mm，`ForceRebuild3` 后
+  **没有回位**，偏差恰为扰动量 50.49 mm。
+- 结论：**API 直接写 `Transform2` 会压过"完全定义"**——位姿的最终保证来自
+  "约束 + 求解"路径，不是固定标志本身。`IsFixed`/DoF=3 只能说明约束完备，
+  不能证明当前位姿正确。
+- 因此批量装配的验收**必须逐组件回读 `Transform2` 平移并与设计值比对**（径向偏差 ≈0），
+  不能只看 `IsFixed` 或约束状态。
+
+对应的正面结论（改几何跟随实验）：同心配合在零件几何变更后（导套 60→75mm，在
+**临时副本**里改）重开装配，径向偏差 [0.0, 0.0]、轴线平行度 1.000——真约束会自动跟随，
+这是纯坐标摆位做不到的。改几何实验务必用副本目录，见 troubleshooting"内部 ID 不匹配"条目。
 

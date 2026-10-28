@@ -140,6 +140,43 @@ python scripts/sw_review.py ^
 - 部件是否明显重叠、悬空、穿模或缺少约束。
 - 文件名、输出目录、导出格式是否符合用户要求。
 
+## 渲染成品图的标准管线（防"残图"）
+
+2026-10-27 实测翻车：渲染抓到未刷新的图形缓冲，成品图只剩 3 个零件。
+稳定顺序（每步都有用，别省）：
+
+```python
+model.ForceRebuild3(False); time.sleep(1)   # 1. 先重建
+model.GraphicsRedraw2()                      # 2. 强制刷新图形缓冲（关键步）
+model.ShowNamedView2("*Isometric", 7)
+model.ClearSelection2(True)
+model.ViewZoomtofit2(); time.sleep(3)        # 3. 缩放后必须等缓冲稳定
+model.SaveBMP(bmp_path, 1600, 1200); time.sleep(1)
+```
+
+渲染后用 PIL 做像素统计验收，两条同时查：
+
+- **非背景占比**（以角点像素为背景色）：明显残图会骤降；
+- **颜色数**：`len(set(data))` 过低说明只剩一两个零件或大面积空白。
+
+比"看一眼图"更强的机器判据（渲染前做）：回读 `GetComponents(False)` 组件数 +
+逐组件 `Transform2.ArrayData[9:12]` 平移与设计值比对（×1000 转 mm）。
+图"看着不对"时先用位姿回读定位是装配错还是渲染错——装配错改装配，
+渲染错重跑管线。
+
+## 交付收尾清单（任务结束必做）
+
+用户明确要求（2026-10-28）：**一次性 .py 脚本一律不留**，交付目录只留
+模型/装配体/工程图/STEP + 效果图 PNG + 验收与参数 JSON + 人读 md 报告。
+
+1. 删除所有一次性脚本（根目录散落的 fix_*/render_*/audit、各交付目录的
+   build_*/check_*、scripts/ 整目录）、运行 JSON、BMP、`__pycache__`、`.workbuddy-ai/tmp/`。
+2. **分小批 rm**（≤10 个/批）：大批量 rm 实测会被 SIGTERM 中断且部分执行，
+   造成"以为删了其实还在"。
+3. **`find` 验收归零**：`find outputs -name "*.py" -o -name "*.bmp" | wc -l` 必须 = 0。
+4. **同步更新文档**：该目录 README/交付报告里的交付清单删掉脚本条目，
+   否则文档引用失效文件。
+
 ## 发现问题时
 
 1. 不要只报告“文件已保存”。
