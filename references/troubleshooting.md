@@ -1017,9 +1017,12 @@ sw.UserControl = False
 # 执行批量操作...
 
 # 手动重建
-model.EditRebuild3()
+model.ForceRebuild3(False)   # ✅ 用这个
 sw.UserControl = True
 ```
+
+⚠️ 别写 `model.EditRebuild3()`：`EditRebuild3` 在本机动态派发下是 bool **属性**，
+加括号调用会报 not callable。重建一律用 `ForceRebuild3(False)`。
 
 ## 版本号对照
 

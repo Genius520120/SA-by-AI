@@ -66,7 +66,7 @@ SolidWorks 2015+ 的 `AddMate5` 是 15 参数签名，Python COM 下 by-ref 错�
 errors = VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
 mate = asm_model.AddMate5(
     mate_type,          # swMateType_e
-    align,              # swMateAlign_e，常用 0=Aligned
+    align,              # swMateAlign_e——实测语义见下方表，别默认传 0
     flip,               # bool
     distance,           # 距离配合值，单位米
     distance_upper,     # 距离上限；无限制时等于 distance
@@ -82,6 +82,16 @@ mate = asm_model.AddMate5(
     errors,
 )
 ```
+
+`align`（swMateAlign_e）的实测语义（2026-10 实测，**别统一传 0**）：
+
+| 配合对象 | 可用值 | 实测依据 |
+|---|---|---|
+| 面-面重合/贴合 | `1 = ANTIALIGNED` | 传 0 求解器拒绝或翻转 |
+| 圆柱-圆柱同轴 | `2 = CLOSEST` | 传 0 曾导致缸盖翻转 180°/位移 906mm、连杆翻转 65mm |
+
+如果拿不准，包一层"多 align 重试"（先试语义正确值，失败再换），
+配合创建后回读组件位姿验证径向偏差 ≈ 0。
 
 优先复用 `scripts/sw_assembly.py`：
 
@@ -294,17 +304,20 @@ def match_face_by_box(comp, target_box, tol=1e-4):
 
 Gear Mate 不负责防止齿轮实体穿透；它只建立旋转比例关系。需要几何安全时：
 
-- 用 `InterferenceDetection` 或 GUI 中的干涉检查验证。
 - 用 Limit Angle / Limit Distance 限制行程。
 - 用 Mate Controller 保存几个关键位置并生成 Motion Study 动画。
 
-```python
-interference = asm.InterferenceDetection
-interference.TreatSubAssembliesAsComponents = False
-interference.TreatCoincidenceAsInterference = False
-interference.Done()
-count = interference.GetInterferenceCount()
-```
+### ⚠️ 别用 InterferenceDetectionManager 做干涉验收（本机实测不可信）
+
+2026-10 实测两连翻车：
+
+- 大探针装配体**悬空在空气中**（无任何接触），干涉检查仍报 `5519 mm³`——凭空生成体积；
+- 285 组件总装一次性跑干涉检查，SolidWorks 直接崩溃（错误 61704）。
+
+可靠替代：**解析间隙表 + `Transform2` 位姿回读**——逐对关键圆柱面取
+`CylinderParams`（注意取面积最大的面、`CylinderParams[0..2]` 不一定是中心，
+用"点+单位向量"算轴线距），配合位姿回读比对设计值，做机器可核的间隙验收。
+结果写 JSON 留档，比干涉检查工具的 Volume 值可信。
 
 ## 大型装配体建议
 
