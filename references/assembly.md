@@ -415,3 +415,43 @@ comp.GetConstrainedStatus()     # 3 = 完全定义/固定，2 = 欠定义
 **临时副本**里改）重开装配，径向偏差 [0.0, 0.0]、轴线平行度 1.000——真约束会自动跟随，
 这是纯坐标摆位做不到的。改几何实验务必用副本目录，见 troubleshooting"内部 ID 不匹配"条目。
 
+### 配合求解会移动零件——Fix 之前必须复位位姿
+
+2026-10-28 空压机总装实测翻车：22 组件摆好位姿 → 建 7 个同心配合 → 直接 `FixComponent()`，
+结果 **6 个零件位姿错误**：
+
+| 零件 | 期望 | 实际 | 现象 |
+|---|---|---|---|
+| 气缸 | z=182 | z=**2**、Z 轴 −Z | 翻转 180° 且掉到底座 |
+| 缸盖 | z=272 | z=**12**、Z 轴 (0.2,−0.98,0) | 被转到沿 −Y |
+| 飞轮 | x=−105 | x=**−65** | 跑到轴中段 |
+| 轴承 L/R | x=−75/25 | x=**−59/91** | 漂移 16mm |
+| 活塞销 | x=−45 | x=**15** | 跑出活塞 60mm |
+
+根因：**同轴配合只锁径向，轴向完全自由**，求解器会把零件吸到"最近的合法位置"；
+面贴合也可能选错面（`GetBox` 返回**零件坐标**，若传全局坐标会找不到面或选错面）。
+配合一旦建完，`FixComponent()` 就把这个**错误位姿锁死**了。
+
+稳定顺序（缺一不可）：
+
+```python
+# 1. 摆到设计位姿
+place(comp, DESIGN_POS)
+# 2. 建配合（同心 / 面贴合）
+select_entities_for_mate(asm, a, b, mark=1)
+add_mate5_checked(asm, SW_MATE_CONCENTRIC, align=2)
+# 3. 关键：配合后重新摆回设计位姿
+for name, c in comps.items():
+    place(c, DESIGN_POS[name])
+asm.ForceRebuild3(False)
+# 4. 再 Fix（把复位后的正确位姿锁死）
+asm.ClearSelection2(True)
+for c in comps.values():
+    c.Select2(True, 0)
+asm.FixComponent()
+# 5. 回读验证：平移偏差 = 0 且局部 Z 轴 = +Z（无翻转）
+```
+
+判据：`Transform2.ArrayData[9:12]` 与设计值偏差 ≤0.5mm，且 `ArrayData[6:9]`（局部 Z 轴像）
+第三分量 >0.9（无翻转）。两条都过才算装配正确。
+

@@ -344,8 +344,56 @@ add_concentric_mate_by_cylinders(..., lock_rotation=False)
 3. **草图有开环** - 拉伸需要闭合轮廓
 4. **单位错误** - API 使用米，不是毫米
 
-### SelectByID2("SKETCH") 持续返回 False
+### extrude_boss 的 direction=True 是负方向（2026-10-28 三基准面复核）
 
+实测（三个基准面一致，圆 u=50 r=5、拉伸 10，读包围盒中心）：
+
+| 基准面 | direction=True | direction=False |
+|---|---|---|
+| Front Plane | z = **−5** | z = +5 |
+| Right Plane | x = **−5** | x = +5 |
+| Top Plane | y = **−5** | y = +5 |
+
+结论：**`direction=True` 沿负向（−Z/−X/−Y），`direction=False` 沿正向**。
+旧文档"direction 表示沿法向"的描述会误导——按它写会把零件建到负坐标区，
+后续切除（草图在正区、实体在负区）全部返回 None，且报错完全看不出方向错。
+稳定习惯：**建模统一用 `direction=False`**（零件落在正坐标区）。
+
+### extrude_cut 只切草图平面一侧，且深度会被截断
+
+实测（200 宽箱体，Right Plane 圆 φ10，depth=500）：
+
+- 只切掉 **3,927 mm³** = π×5²×**50**（单侧 50mm 深）
+- 单侧 100 深应为 7,854、贯穿 200 深应为 15,708
+
+两个结论：
+
+1. **只切一侧**：贯穿必须正反各切一次（两次都要新建草图）。
+2. **深度被截断**：传 500mm 实际只切 50mm。需要切多深就分段切，或改用
+   `extrude_cut(depth=实体厚度+ε)` 并两侧各一次。
+
+```python
+def cut_circle(m, plane, cx, cy, dia, depth=200.0):
+    for d in (True, False):
+        with sketch(m, plane) as s:
+            sketch_circle(m, cx, cy, mm(dia / 2.0))
+        try:
+            extrude_cut(m, s, mm(depth), direction=d)
+        except Exception:
+            pass
+```
+
+### Top Plane 上的切除完全不可用（本机）
+
+实测（φ64.8×45 活塞上打 φ16 横孔，Top Plane 草图）：
+
+- `direction=True` → 抛异常；`direction=False` → 抛异常
+- 换深度 20/30/32/80/100 全部失败
+
+规避：**沿 Y 方向的孔不要在 Top Plane 上切**。若几何允许（如活塞销孔应平行曲轴），
+改在 Right Plane 上切（沿 X）；否则只能用"分段凸台拼合"绕开。
+
+### SelectByID2("SKETCH") 持续返回 False
 场景：SolidWorks 2024 中文版中，`SelectByID2("草图1", "SKETCH", ...)` 和 `SelectByID2("Sketch1", "SKETCH", ...)` 都返回 `False`，随后 `FeatureExtrusion3()` 返回 `None`。
 
 根因：部分版本/语言环境下，草图名称选择不稳定；旧版 `sw_part._ensure_sketch_selected()` 还曾经把“当前选择集数量 > 0”当成成功条件，导致前几个零件靠残留选择集偶然成功，选择集被清空后全部失败。
