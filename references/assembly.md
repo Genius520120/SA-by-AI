@@ -455,3 +455,42 @@ asm.FixComponent()
 判据：`Transform2.ArrayData[9:12]` 与设计值偏差 ≤0.5mm，且 `ArrayData[6:9]`（局部 Z 轴像）
 第三分量 >0.9（无翻转）。两条都过才算装配正确。
 
+### 交付前必跑：装配几何自检（sw_assembly_audit）
+
+2026-10-28 空压机总装连踩 4 个"看着对、其实错"的坑（飞轮埋进箱壁 15mm、
+螺栓 PCD 四角超出端面 5.5mm、螺栓整根落在缸盖下方、轴向件建错基准面）。
+这类错误**不能靠看渲染图发现**，必须用机器断言。技能提供 `scripts/sw_assembly_audit.py`：
+
+```python
+from sw_assembly_audit import (check_pose, check_clearance, check_bolt_circle,
+                               check_axial_chain, comp_aabb, audit, print_report)
+
+checks = []
+# 1) 位姿 + 朝向（抓"被求解器挪走"和"翻转/建错基准面"）
+for name, comp in comps.items():
+    checks.append(check_pose(name, comp, DESIGN_POS[name], tol=0.5))
+# 2) 包围盒间隙（抓"飞轮埋进箱壁"这类轴向干涉）
+checks.append(check_clearance("飞轮_箱体_x",
+                              comp_aabb(fw, fw_size, fw_min),
+                              comp_aabb(cc, cc_size, cc_min), axis=0, min_gap=0.0))
+# 3) 圆周分布（抓"矩形 PCD 四角超出圆盘半径"）
+checks.append(check_bolt_circle("缸盖螺栓", bolt_xy_list,
+                                center=(-25, 0), face_radius=55, hole_dia=9))
+# 4) 轴向尺寸链（抓"螺栓落在缸盖下方"这类贴合关系错）
+checks.append(check_axial_chain("缸盖_气缸", head_box, cyl_box, axis=2, tol=0.5))
+
+print_report(audit(checks))     # 非 PASS 不许交付
+```
+
+四条检查对应的真实错误（回归用例 `audit_selftest.json`）：
+
+| 检查 | 抓到的历史错误 | 证据 |
+|---|---|---|
+| `check_pose` | 气缸翻转 180°、飞轮跑到轴中段 | 平移偏差 25mm / Z 轴 −Z |
+| `check_clearance` | 飞轮与箱壁重叠 | 间隙 **−15.0mm** |
+| `check_bolt_circle` | 螺栓 PCD 四角超半径 | 距中心 **60.52 > 55**，边距 −10.02 |
+| `check_axial_chain` | 缸盖与气缸不贴合 | 间隙 ≠ 0 |
+
+**注意 `comp_aabb` 的取盒方式**：`IComponent2` 上直接调 `collect_bounding_box` 会返回 None，
+必须用零件文档的包围盒（`min_corner_mm` + `size_mm`）配合组件 `Transform2` 的 8 角点变换推算。
+
