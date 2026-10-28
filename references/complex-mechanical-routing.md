@@ -47,6 +47,10 @@ python scripts\sw_capability_probe.py --output capability_report.json
 3. 接触、摩擦、弹簧、阻尼、重力和碰撞不属于当前“旋转马达已验证”范围。
 4. 运动交付必须包含：算例类型、时长、马达数量、外力数量、特征数量、结果存在性和 `results_out_of_date`。
 5. 可播放动画不能证明机构正确；还要检查干涉、行程极限、速度/加速度、驱动力/扭矩和 Mate 反力。
+
+> ⚠️ 干涉检查在本机要用"解析间隙表 + 位姿回读"，不要直接依赖 SolidWorks 的干涉检测 API
+> （2026-10-28 实测：接触/悬空/真穿透三种工况全部返回 0 干涉，详见 `assembly.md` 的
+> 「干涉与运动边界」）。
 6. Motion Analysis 结果依赖加载项和许可证，缺失时明确降级为 Animation/Basic Motion，不能伪造分析结果。
 
 ## 新能力开发门禁

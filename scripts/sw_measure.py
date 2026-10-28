@@ -299,6 +299,8 @@ def inspect_interference(asm_model, treat_subassemblies_as_components=False,
                                  show_ignored_interferences=True,
                                  include_multibody_part_interferences=False)
         # GetInterferences 执行计算；Done 只在读取结果后释放管理器。
+        # 注意：pywin32 动态派发下"属性访问 = 执行调用"，所以 Done 必须按属性读，
+        # 写成 interference.Done() 会报 "'int' object is not callable"（2026-10-28 实测）。
         raw_items = get_com_member(interference, "GetInterferences")
         detected = list(raw_items) if raw_items is not None else []
         count = int(get_com_member(interference, "GetInterferenceCount"))
@@ -324,7 +326,7 @@ def inspect_interference(asm_model, treat_subassemblies_as_components=False,
         return result
     finally:
         try:
-            interference.Done()
+            _ = interference.Done          # 属性访问即执行（不能写成 Done()）
         except Exception as exc:
             result["errors"].append(f"结束干涉检查失败: {exc}")
 

@@ -83,15 +83,21 @@ mate = asm_model.AddMate5(
 )
 ```
 
-`align`（swMateAlign_e）的实测语义（2026-10 实测，**别统一传 0**）：
+`align`（swMateAlign_e）的实测行为（2026-10-28 配对矩阵实测，**别统一传 0**）：
 
-| 配合对象 | 可用值 | 实测依据 |
-|---|---|---|
-| 面-面重合/贴合 | `1 = ANTIALIGNED` | 传 0 求解器拒绝或翻转 |
-| 圆柱-圆柱同轴 | `2 = CLOSEST` | 传 0 曾导致缸盖翻转 180°/位移 906mm、连杆翻转 65mm |
+| 配合对象 | align=0 | align=1 (ANTIALIGNED) | align=2 (CLOSEST) | 结论 |
+|---|---|---|---|---|
+| 圆柱-圆柱同轴 | **翻转 180°**（旋转阵 zz=−1.000）且轴向偏 50mm | 正常（zz=+1，偏差 0） | 正常（zz=+1，偏差 0） | **圆柱同轴必须用 1 或 2** |
+| 面-面贴合(distance=0) | 与 1/2 行为一致 | 与 0/2 行为一致 | 与 0/1 行为一致 | 本次用例未观察到差异，**未验证** |
 
-如果拿不准，包一层"多 align 重试"（先试语义正确值，失败再换），
-配合创建后回读组件位姿验证径向偏差 ≈ 0。
+同向历史案例（更早实测）：统一传 0 曾导致缸盖翻转 180°/位移 906mm、连杆翻转 65mm。
+
+因此：
+
+- 圆柱同轴：直接用 `align=2`（CLOSEST）；拿不准就在 1/2 之间重试。
+- 面-面：先按 `align=1` 试，失败再换——**但无论如何都要回读位姿**。
+- **判据不靠 align 参数，靠回读**：配合创建后逐组件回读 `Transform2`，
+  看旋转阵（zz<−0.9 即翻转 180°）和平移与设计值的偏差，偏差不为 0 就说明 align 选错了。
 
 优先复用 `scripts/sw_assembly.py`：
 
@@ -307,12 +313,34 @@ Gear Mate 不负责防止齿轮实体穿透；它只建立旋转比例关系。�
 - 用 Limit Angle / Limit Distance 限制行程。
 - 用 Mate Controller 保存几个关键位置并生成 Motion Study 动画。
 
-### ⚠️ 别用 InterferenceDetectionManager 做干涉验收（本机实测不可信）
+### ⚠️ 干涉检查 API：本机测不出可靠结果，别当验收依据
 
-2026-10 实测两连翻车：
+2026-10-28 实测（凸轮机构零件，3 工况对照）：
 
-- 大探针装配体**悬空在空气中**（无任何接触），干涉检查仍报 `5519 mm³`——凭空生成体积；
-- 285 组件总装一次性跑干涉检查，SolidWorks 直接崩溃（错误 61704）。
+| 工况 | 干涉数 | 体积 |
+|---|---:|---:|
+| 滚子贴在凸轮上（真接触） | 0 | 0 |
+| 滚子悬空 150mm（必不接触） | 0 | 0 |
+| 滚子深入凸轮实体 25mm（**真穿透**） | 0 | 0 |
+
+三种工况全部返回 0——**连真穿透都检不出**，因此这个 API 在本机不能用作
+自动验收依据；另有实测记录：285 组件总装一次性跑干涉检查会让 SolidWorks 崩溃
+（错误 61704）。
+
+调用上的三个坑（本机实测）：
+
+```python
+mgr = asm.InterferenceDetectionManager   # ✅ 入口名；写 asm.InterferenceDetection 会 AttributeError
+mgr.TreatSubAssembliesAsComponents = False
+mgr.TreatCoincidenceAsInterference = False
+mgr.IgnoreHiddenBodies = False
+items = mgr.GetInterferences              # ✅ 属性访问即触发计算（写 () 也行，但别混用）
+count = int(mgr.GetInterferenceCount)    # ✅ 同上
+_ = mgr.Done                              # ⚠️ 必须属性访问；写 mgr.Done() 报 'int' object is not callable
+```
+
+> 动态派发下"属性访问 = 执行调用"：`Done()` 会被解析成先取属性（得到 int）再调用，
+> 于是报 not callable。`scripts/sw_measure.py` 曾有此 bug，2026-10-28 已修。
 
 可靠替代：**解析间隙表 + `Transform2` 位姿回读**——逐对关键圆柱面取
 `CylinderParams`（注意取面积最大的面、`CylinderParams[0..2]` 不一定是中心，
