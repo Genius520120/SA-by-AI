@@ -536,6 +536,38 @@ model.SaveAs3(path, 0, 0)            # 再保存
 app.CloseDoc(get_com_member(model, "GetTitle"))
 ```
 
+### 打开装配体报"所参照的文档具有不匹配的内部 ID"
+
+症状：打开 `.SLDASM` 弹出 SolidWorks 对话框
+「所参照的文档具有不匹配的内部 ID —— 您正打开的文档参考 xxx.SLDPRT，但内部 ID 不匹配」。
+
+原因：**用"新建零件再覆盖文件"的方式改了被装配体引用的零件**。
+SolidWorks 在装配体里记录的是零件文档的**内部 ID**（不是文件名）；
+新建的文档即使存成同名文件，内部 ID 也不同 → 引用失效。
+
+正确做法（按优先级）：
+
+1. **在原文档内改几何**：打开零件 → 加/改特征 → 保存。文档对象不变、内部 ID 不变，引用始终有效。
+   ```python
+   doc = open_document(sw, part_path)
+   with sketch(doc, "Front Plane") as s:
+       sketch_circle(doc, 0, 0, mm(20))
+   f = extrude_offset_start(doc, s, mm(15), mm(75), direction=True, merge=True)
+   doc.SaveAs3(part_path, 0, 0)      # 同一文档 → ID 不变
+   ```
+2. **做几何变更实验时用副本**：把 `parts/` 与装配体整目录复制到临时目录再改副本，
+   交付文件完全不受影响，也不会污染引用。
+3. **如果确实覆盖了**：只能重建装配体（重新 AddComponent 生成新引用），
+   或在 SW 界面用「替换件 / Replace Components」把引用指到新文件。
+
+预防：
+
+- 交付脚本里凡是"重建零件"的函数，**不要原地覆盖已被引用的文件**；
+  要么在原文档内改，要么写到新目录并同步重建装配体。
+- 改完零件后**重建装配体**再交付，并回读 `GetPathName()` 校验引用全部存在。
+- 弹窗本身是模态的：可用 `sw_dialog_guard.DialogGuard` 兜底，但它只能点掉、
+  不能替你选对选项——所以根子上要避免制造这个局面。
+
 ### 键槽/沉孔与孔壁相切时切除返回 None
 
 场景：在孔壁上切键槽，矩形内缘与孔圆柱面**正好相切**（y 从孔半径开始），
