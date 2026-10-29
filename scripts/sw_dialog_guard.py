@@ -36,12 +36,57 @@ CANCEL_KEYWORDS = ("输入诊断", "Input Diagnostics", "重建模型错误", "R
 
 
 class DialogGuard:
-    def __init__(self, interval=0.4, verbose=True):
+    def __init__(self, interval=0.4, verbose=True, title_keywords=None,
+                 message_keywords=(), pid=None):
+        """
+        @param title_keywords 标题关键字；None 使用模块默认列表。
+        @param message_keywords 正文关键字；非空时必须命中对话框内文本才点击，
+               用于避免仅凭标题 “SOLIDWORKS” 误点未知确认框。
+        @param pid 只处理该进程（int）或这些进程（iterable）的对话框；None 不限制。
+        """
         self.interval = interval
         self.verbose = verbose
+        self.title_keywords = tuple(title_keywords) if title_keywords is not None else TITLE_KEYWORDS
+        self.message_keywords = tuple(message_keywords)
+        self.pid = pid
         self._stop = threading.Event()
         self._thread = None
         self.killed = []
+
+    def _pid_allowed(self, hwnd):
+        if self.pid is None:
+            return True
+        try:
+            _tid, pid = win32gui.GetWindowThreadProcessId(hwnd)
+        except Exception:
+            return False
+        allowed = (self.pid,) if isinstance(self.pid, int) else tuple(self.pid)
+        return int(pid) in {int(item) for item in allowed}
+
+    @staticmethod
+    def _dialog_text(hwnd):
+        parts = []
+
+        def cb(child, _):
+            try:
+                if win32gui.IsWindowVisible(child):
+                    text = (win32gui.GetWindowText(child) or "").strip()
+                    if text:
+                        parts.append(text)
+            except Exception:
+                pass
+
+        try:
+            win32gui.EnumChildWindows(hwnd, cb, None)
+        except Exception:
+            pass
+        return "\n".join(parts)
+
+    def _message_matches(self, hwnd):
+        if not self.message_keywords:
+            return True
+        text = self._dialog_text(hwnd)
+        return any(keyword in text for keyword in self.message_keywords)
 
     def __enter__(self):
         self.start()
@@ -81,8 +126,11 @@ class DialogGuard:
             if cls != "#32770":       # 标准对话框类
                 return
             title = win32gui.GetWindowText(hwnd) or ""
-            if any(k in title for k in TITLE_KEYWORDS):
-                targets.append((hwnd, title))
+            if not any(k in title for k in self.title_keywords):
+                return
+            if not self._pid_allowed(hwnd) or not self._message_matches(hwnd):
+                return
+            targets.append((hwnd, title))
 
         win32gui.EnumWindows(cb, None)
         for hwnd, title in targets:

@@ -39,7 +39,7 @@ class SolidWorksSession:
         session.export(model, r"C:\\temp\\part.step")
     """
 
-    def __init__(self, version=None, wait_seconds=5, visible=True, *, max_documents=8, recover=False):
+    def __init__(self, version=None, wait_seconds=5, visible=True, *, max_documents=8, recover=False, recover_pids=None):
         """
         初始化并连接 SolidWorks。
 
@@ -55,6 +55,7 @@ class SolidWorksSession:
             visible=visible,
             return_metadata=True,
             recover=recover,
+            recover_pids=recover_pids,
         )
         self.max_documents = int(max_documents)
         if self.max_documents < 1:

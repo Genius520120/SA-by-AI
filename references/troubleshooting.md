@@ -1260,3 +1260,12 @@ finally:
 
 - 实测：扩展后看门狗 10 s 内点掉该框，连接恢复（SW2024 rev 32.0.1）；未点掉时 recover 反复杀进程仍会 `SW_LAUNCH_FAILED`。
 - 同一轮还遇到进程在启动/求解中崩溃（RPC 不可用），看门狗无能为力；按上方「注意区分两种卡住」处理，改分进程重试。
+
+### 2026-10-29 复核更正：配合数量、弹窗归因与 recover 边界
+
+- 上方「同一对零件只允许一个配合」不是通用结论。本次在 base/stand、cover/stand 等同一对上均成功建成 **面重合 + 圆柱同心** 两条 Mate（10 条 Mate / 5 对）；失败条件应写成“同一对、先同心后重合、本机 SW2024 该几何”而不是“同对只能一个”。
+- 「先同心后重合会报 error_status=5」目前只在本次 base/stand 等局部试验成立，不能外推为所有零件/版本；判据仍是实体、自由度预算与回读位姿。
+- `.NET Framework` 弹窗是启动警告，点掉后连接可恢复；但 `GetActiveObject 操作无法使用` / `RPC 服务器不可用` 也可能来自进程崩溃或求解挂死，不能全部归因 .NET。看门狗应同时限制 **标题 + 正文关键字 + PID**；不要把 `SOLIDWORKS` 加进通用标题后盲点所有确认框。
+- `DialogGuard` 现支持 `title_keywords` / `message_keywords` / `pid`；本次只用 `message_keywords=("没能装入 Microsoft .NET Framework",)` 点该警告。
+- `connect_solidworks(recover=True)` 现必须传 `recover_pids`（本轮自有实例 PID），未提供时拒绝结束任何进程；`SolidWorksSession` 同步新增 `recover_pids`。
+- 本轮还发现：工作区落在 `C:\Users\CGIT` 这个主目录 Git 仓库下时，Qoder 会反复对主目录执行 `git status --untracked-files=all`，单进程 60–430 MB、可并发数十个；CAD 工作区应建独立 `.git`，其余工作区需关闭或独立建库，否则内存会被扫描吃光。

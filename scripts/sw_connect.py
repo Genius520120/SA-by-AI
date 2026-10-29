@@ -255,7 +255,7 @@ def close_owned_solidworks(sw, started_by_cad_studio, expected_pid=None):
     return False
 
 
-def connect_solidworks(version=None, wait_seconds=5, visible=True, return_metadata=False, recover=False):
+def connect_solidworks(version=None, wait_seconds=5, visible=True, return_metadata=False, recover=False, recover_pids=None):
     """
     连接到 SolidWorks 实例。
 
@@ -266,6 +266,8 @@ def connect_solidworks(version=None, wait_seconds=5, visible=True, return_metada
         recover: 已有实例存活但 COM 无法附着（ROT 未注册 / 残留模态）时，
                  是否强制结束该实例并重新启动。默认 False，因为这会丢失该实例中
                  未保存的文档；自动化流水线可显式传 True。
+        recover_pids: 使用 recover 时必须显式提供本轮自有实例的 PID（int 或 iterable）。
+                 未提供时拒绝结束任何进程，避免误杀用户正在使用的实例。
 
     返回:
         (sw, model) 元组，model 可能为 None（无打开的文档时）
@@ -301,9 +303,20 @@ def connect_solidworks(version=None, wait_seconds=5, visible=True, return_metada
                                 "SW_INSTANCE_NOT_READY", "attach",
                                 "已有实例尚不可连接，已阻止重复启动；如需自动恢复请传 recover=True",
                             )
+                        if recover_pids is None:
+                            raise SolidWorksConnectionError(
+                                "SW_RECOVER_REQUIRES_OWNED_PID", "recover",
+                                "recover=True 需要显式 recover_pids（本轮自有实例 PID）；拒绝结束未知实例",
+                            )
+                        allowed = {int(pid) for pid in ((recover_pids,) if isinstance(recover_pids, int) else recover_pids)}
                         stuck = [pid for pid, year in before.items()
-                                 if version is None or year is None or year == int(version)]
-                        print(f"[recover] 已有 SolidWorks 实例 COM 不可附着（PID {stuck}），强制结束并重启")
+                                 if (version is None or year is None or year == int(version)) and int(pid) in allowed]
+                        if not stuck:
+                            raise SolidWorksConnectionError(
+                                "SW_RECOVER_NO_OWNED_PID", "recover",
+                                f"recover_pids={sorted(allowed)} 中没有可结束的本轮实例",
+                            )
+                        print(f"[recover] 仅结束本轮自有实例 PID {stuck} 并重启")
                         for pid in stuck:
                             terminate_process(pid)
                         sw = win32com_client.Dispatch(prog_id)
