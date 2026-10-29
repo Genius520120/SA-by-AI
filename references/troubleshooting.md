@@ -1211,3 +1211,52 @@ seg.Select2(False, 1)   # mark=1 作为扫掠轮廓
      `rebuild_assembly` 已内置该行为，并在保存前调用 `verify_layout` 比对组件位姿与规格，
      不一致直接抛错。
 - 验收：装配后逐组件 `Transform2` 平移 XY 应 ≈ 0（径向同轴）、Z 应 = 规格值（轴向级联）。
+
+### AddComponent5 传 (0,0,0) 的 z 偏移复核（2026-10-29）
+
+- 复核上一节：底座（局部 z 0–25）传 (0,0,0) 后 `Transform2` 平移 z = **−12.5**；轴承座（z 25–70）为 **−47.5**，均等于各自包围盒中心，不是“贴到原点”。
+- 正确用法：传入零件设计包围盒中心（如底座 (0,0,12.5)、轴承座 (0,0,47.5)、螺栓 13.25/71.75），平移即为 0；或加完后显式写 `Transform2`。
+- 验收：装配后逐组件回读 `Transform2` 平移；主件应 ≈0，螺栓应等于 PCD 坐标，不能只看“视觉上在位”。
+
+### 同一对零件的配合顺序：先面重合、后圆柱同心（2026-10-29 复核补充）
+
+> 与上方「AddMate5 返回 error_status=5」节并存：该节结论来自 2026-10-28 的单配合场景；本次实测同一对零件可以建两个配合，但**顺序**决定成败。
+
+- 实测（SW2024，base+stand）：先同心（type=1，align=2）成功，再面重合（type=0）→ `AddMate5 失败: type=0, error_status=5`；改 distance=0 同样 error 5。
+- 反过来：先面重合（align=1，error=1 成功），再同心（align=2，error=1 成功）；同一对零件两条 Mate 都在特征树。
+- 本次完整装配 5 对零件 10 条 Mate 全部按「先重合、后同心」建成；顺序反了必卡在第二刀。
+- 判据：第二条 Mate 报 5 时，先交换顺序重试，再考虑减自由度；不要直接判定“同一对只允许一个配合”。
+- 证据：`cad_output/spindle_unit/s3_assembly.py`、`debug_mate.py`；`s3_summary.json` 的 mates 列表 10 条。
+
+### 重合配合 align 语义：共面同向用 0、贴合反向用 1、同轴用 2（2026-10-29 实测）
+
+- 同心（圆柱-圆柱）：align=2（CLOSEST）稳定；align=0 会翻转 180°（见上方 AddMate5 align 实测表）。
+- 重合（面-面）不能一律 align=1，要看法向：
+
+| 几何关系 | 两面法向 | align | 本次实例 |
+| --- | --- | --- | --- |
+| 贴合（相向） | 相反 | 1 | stand 底/底座凸台顶、cover 底/stand 顶、impeller 轮毂底/cover 顶 |
+| 共面同向（齐平对接） | 相同 | 0 | bushing 顶/stand 顶、shaft 轴肩/bushing 底 |
+
+- 失败症状：bushing 用 align=1 时整件翻转 180°（局部 Z 轴 −1、平移 +140 mm），shaft 被带偏 +90 mm；改 align=0 后全部归零。
+- 判据：先按法向判断“贴合”还是“共面同向”再选 align；建完必须回读 `Transform2` 的 Z 轴符号与平移，不能只看 AddMate5 返回非空。
+
+### 启动时的 .NET Framework 模态框（标题只有 SOLIDWORKS）
+
+- 现象：SolidWorks 启动弹「没能装入 Microsoft .NET Framework」警告框，标题栏只有 `SOLIDWORKS`；模态期间 `GetActiveObject` 报 `操作无法使用`，随后 `Dispatch` 报 `远程过程调用失败`，进程常驻 14–19 MB 且无主窗口，像启动挂死。
+- 原有看门狗只匹配「新建 SOLIDWORKS 文件 / 输入诊断 / 重建模型错误」等标题，不命中该框。
+- 修法：运行时扩展关键字（仍只匹配 `#32770` 对话框类，不会误点主窗口）：
+
+```python
+import sw_dialog_guard as _dg
+from sw_dialog_guard import DialogGuard
+_dg.TITLE_KEYWORDS = _dg.TITLE_KEYWORDS + ("SOLIDWORKS",)
+guard = DialogGuard(); guard.start()
+try:
+    ...  # COM 操作
+finally:
+    guard.stop()
+```
+
+- 实测：扩展后看门狗 10 s 内点掉该框，连接恢复（SW2024 rev 32.0.1）；未点掉时 recover 反复杀进程仍会 `SW_LAUNCH_FAILED`。
+- 同一轮还遇到进程在启动/求解中崩溃（RPC 不可用），看门狗无能为力；按上方「注意区分两种卡住」处理，改分进程重试。
